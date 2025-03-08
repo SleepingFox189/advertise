@@ -15,54 +15,73 @@ local SCRIPT_URL = "https://raw.githubusercontent.com/SleepingFox189/advertise/r
 local saveKey = "ServerHopVisited_" .. game.PlaceId
 local visitedServers = {}
 
--- Debugging Function
+-- Debug function
 local function debugPrint(msg)
     print("[DEBUG]: " .. msg)
 end
 
--- Optimized Chat Function
+-- Chat Function (with Debugging)
 local function SendChatMessage(message)
-    task.spawn(function()
-        debugPrint("Sending chat message: " .. message)
+    debugPrint("Attempting to send chat message: " .. message)
 
-        -- Method 1: DefaultChatSystemChatEvents
-        local chatEvent = ReplicatedStorage:FindFirstChild("DefaultChatSystemChatEvents")
-        if chatEvent and chatEvent:FindFirstChild("SayMessageRequest") then
-            pcall(function()
-                chatEvent.SayMessageRequest:FireServer(message, "All")
-            end)
-            return
+    -- Method 1: Using DefaultChatSystemChatEvents
+    local chatEvent = ReplicatedStorage:FindFirstChild("DefaultChatSystemChatEvents")
+    if chatEvent and chatEvent:FindFirstChild("SayMessageRequest") then
+        local success, err = pcall(function()
+            chatEvent.SayMessageRequest:FireServer(message, "All")
+        end)
+        if success then
+            debugPrint("Sent message via DefaultChatSystemChatEvents!")
+            return true
+        else
+            debugPrint("Failed to send via DefaultChatSystemChatEvents: " .. tostring(err))
         end
+    end
 
-        -- Method 2: TextChatService
-        if TextChatService and TextChatService.TextChannels.RBXGeneral then
-            pcall(function()
-                TextChatService.TextChannels.RBXGeneral:SendAsync(message)
-            end)
-            return
+    -- Method 2: Using New TextChatService
+    if TextChatService and TextChatService.ChatInputBarConfiguration then
+        local success, err = pcall(function()
+            TextChatService.TextChannels.RBXGeneral:SendAsync(message)
+        end)
+        if success then
+            debugPrint("Sent message via TextChatService!")
+            return true
+        else
+            debugPrint("Failed to send via TextChatService: " .. tostring(err))
         end
+    end
 
-        -- Method 3: Virtual Input
-        local chatGui = LocalPlayer:FindFirstChild("PlayerGui") and LocalPlayer.PlayerGui:FindFirstChild("Chat")
-        if chatGui then
-            local chatBox = chatGui:FindFirstChildWhichIsA("TextBox", true)
-            if chatBox then
-                pcall(function()
-                    chatBox:CaptureFocus()
-                    chatBox.Text = message
-                    task.wait(0.1)
-                    VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
-                    VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
-                end)
+    -- Method 3: Using Virtual Input to Simulate Chat Entry
+    local chatGui = LocalPlayer:FindFirstChild("PlayerGui") and LocalPlayer.PlayerGui:FindFirstChild("Chat")
+    if chatGui then
+        local chatBox = chatGui:FindFirstChildWhichIsA("TextBox", true)
+        if chatBox then
+            local success, err = pcall(function()
+                chatBox:CaptureFocus()
+                chatBox.Text = message
+                task.wait(0.1)
+                VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
+                VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
+            end)
+            if success then
+                debugPrint("Sent message via VirtualInputManager!")
+                return true
+            else
+                debugPrint("Failed to send via VirtualInputManager: " .. tostring(err))
             end
         end
-    end)
+    end
+
+    debugPrint("All chat methods failed!")
+    return false
 end
 
--- Send messages instantly
-local function SendAllMessages()
-    for _, message in ipairs(CHAT_MESSAGES) do
+-- Sends all messages with a delay
+local function SendChatMessages(messages, delay)
+    delay = delay or 2
+    for _, message in ipairs(messages) do
         SendChatMessage(message)
+        task.wait(delay)
     end
 end
 
@@ -90,50 +109,91 @@ local function AddCurrentServer()
     end
 end
 
-local function GetServers(placeId)
+local function CleanupOldServers()
+    local currentTime = os.time()
+    for jobId, timestamp in pairs(visitedServers) do
+        if currentTime - timestamp > 7200 then -- 2 hours
+            visitedServers[jobId] = nil
+        end
+    end
+    SaveVisitedServers()
+end
+
+local function GetServers(placeId, maxPlayers, cursor)
     local API_URL = "https://games.roblox.com/v1/games/" .. placeId .. "/servers/Public?sortOrder=Asc&limit=100"
+    if cursor then API_URL = API_URL .. "&cursor=" .. cursor end
+    
     local success, result = pcall(function()
         return HttpService:JSONDecode(game:HttpGet(API_URL))
     end)
-    return success and result or { data = {} }
+    
+    return success and result or {data = {}}
 end
 
-local function ServerHop()
-    local placeId = game.PlaceId
+local function ServerHop(placeId, maxPlayers)
+    placeId = placeId or game.PlaceId
     visitedServers = LoadVisitedServers()
     AddCurrentServer()
-
-    local servers = GetServers(placeId)
-    local validServers = {}
-
-    for _, server in ipairs(servers.data) do
-        if not visitedServers[server.id] and server.playing < server.maxPlayers and server.id ~= game.JobId then
-            table.insert(validServers, server)
+    CleanupOldServers()
+    
+    local foundServer = false
+    local cursor = nil
+    
+    for attempt = 1, 10 do
+        local result = GetServers(placeId, maxPlayers, cursor)
+        local validServers = {}
+        for _, server in ipairs(result.data) do
+            if not visitedServers[server.id] and server.playing < server.maxPlayers and server.id ~= game.JobId then
+                table.insert(validServers, server)
+            end
         end
+        
+        if #validServers > 0 then
+            local selectedServer = validServers[math.random(1, #validServers)]
+            visitedServers[selectedServer.id] = os.time()
+            SaveVisitedServers()
+            
+            -- Queue script before teleporting
+            if syn and syn.queue_on_teleport then
+                syn.queue_on_teleport(game:HttpGet(SCRIPT_URL))
+            elseif queue_on_teleport then
+                queue_on_teleport(game:HttpGet(SCRIPT_URL))
+            end
+
+            TeleportService:TeleportToPlaceInstance(placeId, selectedServer.id, LocalPlayer)
+            foundServer = true
+            break
+        end
+        
+        if result.nextPageCursor then
+            cursor = result.nextPageCursor
+        else
+            break
+        end
+        task.wait(1)
     end
+    
+    if not foundServer then
+        task.wait(10)
+        ServerHop(placeId, maxPlayers)
+    end
+end
 
-    if #validServers > 0 then
-        local selectedServer = validServers[math.random(1, #validServers)]
-        visitedServers[selectedServer.id] = os.time()
-        SaveVisitedServers()
-
-        -- Queue script before teleporting
-        if syn and syn.queue_on_teleport then
-            syn.queue_on_teleport(game:HttpGet(SCRIPT_URL))
-        elseif queue_on_teleport then
-            queue_on_teleport(game:HttpGet(SCRIPT_URL))
-        end
-
-        TeleportService:TeleportToPlaceInstance(placeId, selectedServer.id, LocalPlayer)
-    else
+-- Auto Hop Process
+function StartAutoHopProcess()
+    while true do
+        task.wait(3)
+        SendChatMessages(CHAT_MESSAGES, 2)
         task.wait(5)
         ServerHop()
     end
 end
 
--- Auto Hop Process (Runs Instantly)
-task.spawn(function()
-    SendAllMessages()
-    task.wait(0.5)
-    ServerHop()
-end)
+-- Initialize
+if not game:IsLoaded() then game.Loaded:Wait() end
+if not Players.LocalPlayer then Players:GetPropertyChangedSignal("LocalPlayer"):Wait() end
+if not Players.LocalPlayer.Character then Players.LocalPlayer.CharacterAdded:Wait() end
+
+task.wait(2)
+StartAutoHopProcess()
+getgenv().JustTeleported = true
