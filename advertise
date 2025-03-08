@@ -2,6 +2,9 @@ local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local TextChatService = game:GetService("TextChatService")
 
 -- Configuration
 local CHAT_MESSAGES = {
@@ -12,7 +15,54 @@ local SCRIPT_URL = "https://raw.githubusercontent.com/SleepingFox189/advertise/r
 local saveKey = "ServerHopVisited_" .. game.PlaceId
 local visitedServers = {}
 
--- Load and Save Visited Servers
+-- Chat Function with Multiple Methods for Reliability
+local function SendChatMessage(message)
+    -- Method 1: Using DefaultChatSystemChatEvents
+    local chatEvent = ReplicatedStorage:FindFirstChild("DefaultChatSystemChatEvents")
+    if chatEvent and chatEvent:FindFirstChild("SayMessageRequest") then
+        local success = pcall(function()
+            chatEvent.SayMessageRequest:FireServer(message, "All")
+        end)
+        if success then return true end
+    end
+
+    -- Method 2: Using New TextChatService
+    if TextChatService and TextChatService.ChatInputBarConfiguration then
+        local success = pcall(function()
+            TextChatService.TextChannels.RBXGeneral:SendAsync(message)
+        end)
+        if success then return true end
+    end
+
+    -- Method 3: Using Virtual Input to Simulate Chat Entry
+    local chatGui = LocalPlayer:FindFirstChild("PlayerGui") and LocalPlayer.PlayerGui:FindFirstChild("Chat")
+    if chatGui then
+        local chatBox = chatGui:FindFirstChildWhichIsA("TextBox", true)
+        if chatBox then
+            local success = pcall(function()
+                chatBox:CaptureFocus()
+                chatBox.Text = message
+                task.wait(0.1)
+                VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
+                VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
+            end)
+            if success then return true end
+        end
+    end
+    
+    return false
+end
+
+-- Sends all messages with a delay
+local function SendChatMessages(messages, delay)
+    delay = delay or 2
+    for _, message in ipairs(messages) do
+        SendChatMessage(message)
+        task.wait(delay)
+    end
+end
+
+-- Server Hopping Functions
 local function SaveVisitedServers()
     pcall(function()
         writefile(saveKey .. ".json", HttpService:JSONEncode(visitedServers))
@@ -46,7 +96,6 @@ local function CleanupOldServers()
     SaveVisitedServers()
 end
 
--- Server Hopping Function
 local function GetServers(placeId, maxPlayers, cursor)
     local API_URL = "https://games.roblox.com/v1/games/" .. placeId .. "/servers/Public?sortOrder=Asc&limit=100"
     if cursor then API_URL = API_URL .. "&cursor=" .. cursor end
@@ -81,7 +130,7 @@ local function ServerHop(placeId, maxPlayers)
             visitedServers[selectedServer.id] = os.time()
             SaveVisitedServers()
             
-            -- Queue script from external link before teleporting
+            -- Queue script before teleporting
             if syn and syn.queue_on_teleport then
                 syn.queue_on_teleport(game:HttpGet(SCRIPT_URL))
             elseif queue_on_teleport then
@@ -109,8 +158,12 @@ end
 
 -- Auto Hop Process
 function StartAutoHopProcess()
-    task.wait(3)
-    ServerHop()
+    while true do
+        task.wait(3)
+        SendChatMessages(CHAT_MESSAGES, 2)
+        task.wait(5)
+        ServerHop()
+    end
 end
 
 -- Initialize
