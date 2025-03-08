@@ -1,79 +1,395 @@
 local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
-local LocalPlayer = Players.LocalPlayer
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local VirtualInputManager = game:GetService("VirtualInputManager")
-local TextChatService = game:GetService("TextChatService")
-local MessagingService = game:GetService("MessagingService")
+local RunService = game:GetService("RunService")
+
+-- Wait for game to load completely
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
 
 -- Configuration
 local CHAT_MESSAGES = {
-    "gg,JkaD9Znt Join For Acc Grinding",
-    "accountgrind,vercel,app website"
+    "gg, JkaD9Znt Join For Acc Grinding",
+    "accountgrind.vercel.app website"
 }
-local SCRIPT_URL = "https://raw.githubusercontent.com/SleepingFox189/advertise/refs/heads/main/advertise"
-local saveKey = "ServerHopVisited_" .. game.PlaceId
-local visitedServers = {}
 
--- Debug function
-local function debugPrint(msg)
-    print("[DEBUG]: " .. msg)
+local CONFIG = {
+    SERVER_EXPIRY_TIME = 7200, -- 2 hours in seconds
+    SERVER_CAPACITY_THRESHOLD = 0.75, -- Prefer servers with more than 75% capacity
+    SERVER_SEARCH_ATTEMPTS = 15, -- Increased from 10 to 15
+    CHAT_DELAY = 1.5, -- Seconds between chat messages
+    MAX_TELEPORT_RETRIES = 5,
+    TELEPORT_RETRY_DELAY = 5, -- Seconds
+    SAVE_FILE_NAME = "ServerHopVisited_" .. game.PlaceId .. ".json"
+}
+
+-- Initialize player
+local LocalPlayer = Players.LocalPlayer
+if not LocalPlayer then
+    LocalPlayer = Players:GetPropertyChangedSignal("LocalPlayer"):Wait()
 end
 
--- Function to send a message in chat
-local function sendChatMessage(message)
-    local playerChat = TextChatService.Chat.InputObject
-    if playerChat then
-        local messageObject = Instance.new("TextChatMessage")
-        messageObject.Text = message
-        playerChat:Send(messageObject)
-    else
-        debugPrint("Chat service not available!")
+-- Utility Functions
+local DataManager = {}
+
+function DataManager:SaveData(data)
+    local success, errorMessage = pcall(function()
+        writefile(CONFIG.SAVE_FILE_NAME, HttpService:JSONEncode(data))
+    end)
+    
+    if not success then
+        warn("Failed to save data: " .. tostring(errorMessage))
+    end
+    
+    return success
+end
+
+function DataManager:LoadData()
+    if not isfile(CONFIG.SAVE_FILE_NAME) then
+        return {}
+    end
+    
+    local success, data = pcall(function()
+        return HttpService:JSONDecode(readfile(CONFIG.SAVE_FILE_NAME))
+    end)
+    
+    return success and data or {}
+end
+
+-- Server Management
+local ServerManager = {
+    visitedServers = {}
+}
+
+function ServerManager:Initialize()
+    self.visitedServers = DataManager:LoadData()
+    self:CleanupOldServers()
+    self:AddCurrentServer()
+end
+
+function ServerManager:AddCurrentServer()
+    if game.JobId ~= "" then
+        self.visitedServers[game.JobId] = os.time()
+        DataManager:SaveData(self.visitedServers)
     end
 end
 
--- Function to check if the server is full
-local function isServerFull(serverInfo)
-    local maxPlayers = serverInfo.MaxPlayers
-    local currentPlayers = serverInfo.Players
-    return currentPlayers >= maxPlayers
+function ServerManager:CleanupOldServers()
+    local currentTime = os.time()
+    local needsSave = false
+    
+    for jobId, timestamp in pairs(self.visitedServers) do
+        if currentTime - timestamp > CONFIG.SERVER_EXPIRY_TIME then
+            self.visitedServers[jobId] = nil
+            needsSave = true
+        end
+    end
+    
+    if needsSave then
+        DataManager:SaveData(self.visitedServers)
+    end
 end
 
--- Function to find and join the best server
-local function joinBestServer()
-    local availableServers = {}  -- List to store available servers that aren't full
+function ServerManager:GetServers(placeId, cursor)
+    local url = "https://games.roblox.com/v1/games/" .. placeId .. "/servers/Public?sortOrder=Asc&limit=100"
+    if cursor then
+        url = url .. "&cursor=" .. cursor
+    end
 
-    -- Fetch servers data (simulate or get the actual data from some source)
-    local serversData = HttpService:GetAsync("API_ENDPOINT_TO_GET_SERVERS") -- Replace with actual data fetching logic
-    local servers = HttpService:JSONDecode(serversData)
+    local success, result = pcall(function()
+        return HttpService:JSONDecode(game:HttpGet(url))
+    end)
 
-    -- Filter and sort servers by most players, and excluding full ones
-    for _, server in pairs(servers) do
-        if not isServerFull(server) then
-            table.insert(availableServers, server)
+    if not success then
+        warn("Failed to fetch server data. Retrying in 2 seconds...")
+        task.wait(2)
+        return self:GetServers(placeId, cursor)
+    end
+
+    return result
+end
+
+function ServerManager:FindSuitableServer(placeId)
+    local maxPlayers = Players.MaxPlayers
+    local cursor = nil
+    local bestServer = nil
+    
+    for attempt = 1, CONFIG.SERVER_SEARCH_ATTEMPTS do
+        local result = self:GetServers(placeId, cursor)
+        
+        -- Sort servers by player count (descending) to prioritize more populated servers
+        table.sort(result.data, function(a, b)
+            return a.playing > b.playing
+        end)
+        
+        for _, server in ipairs(result.data) do
+            -- Skip servers we've visited
+            if self.visitedServers[server.id] then
+                continue
+            end
+            
+            -- Ensure server isn't full but has good population
+            if server.playing < server.maxPlayers and 
+               server.playing > (maxPlayers * CONFIG.SERVER_CAPACITY_THRESHOLD) then
+                bestServer = server
+                break
+            end
+        end
+
+        if bestServer then
+            break
+        end
+
+        cursor = result.nextPageCursor
+        if not cursor then 
+            break 
+        end
+        
+        task.wait(0.5) -- Reduced delay between API calls
+    end
+    
+    -- If no server found, find any available server that we haven't visited
+    if not bestServer then
+        cursor = nil
+        
+        for attempt = 1, 2 do
+            local result = self:GetServers(placeId, cursor)
+            
+            for _, server in ipairs(result.data) do
+                if not self.visitedServers[server.id] and server.playing < server.maxPlayers then
+                    bestServer = server
+                    break
+                end
+            end
+            
+            if bestServer then
+                break
+            end
+            
+            cursor = result.nextPageCursor
+            if not cursor then 
+                break 
+            end
+            
+            task.wait(0.5)
+        end
+    end
+    
+    return bestServer
+end
+
+function ServerManager:TeleportToServer(server, placeId)
+    if not server then
+        warn("No suitable server found!")
+        return false
+    end
+    
+    -- Mark this server as visited
+    self.visitedServers[server.id] = os.time()
+    DataManager:SaveData(self.visitedServers)
+    
+    -- Create teleport options with retry
+    local teleportOptions = Instance.new("TeleportOptions")
+    teleportOptions.ServerInstanceId = server.id
+    
+    -- Teleport with retry logic
+    local success = false
+    local retryCount = 0
+    
+    repeat
+        pcall(function()
+            success = TeleportService:TeleportToPlaceInstance(
+                placeId, 
+                server.id, 
+                LocalPlayer, 
+                nil, 
+                teleportOptions
+            )
+        end)
+        
+        if not success then
+            retryCount = retryCount + 1
+            if retryCount < CONFIG.MAX_TELEPORT_RETRIES then
+                warn("Teleport attempt " .. retryCount .. " failed. Retrying in " .. CONFIG.TELEPORT_RETRY_DELAY .. " seconds...")
+                task.wait(CONFIG.TELEPORT_RETRY_DELAY)
+            end
+        end
+    until success or retryCount >= CONFIG.MAX_TELEPORT_RETRIES
+    
+    if not success then
+        warn("Failed to teleport after " .. CONFIG.MAX_TELEPORT_RETRIES .. " attempts!")
+    end
+    
+    return success
+end
+
+-- Chat System
+local ChatSystem = {}
+
+function ChatSystem:WaitForCharacter()
+    if not LocalPlayer.Character or not LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+        return LocalPlayer.CharacterAdded:Wait()
+    end
+    return LocalPlayer.Character
+end
+
+function ChatSystem:SendMessage(message)
+    -- Method 1: Default Chat System
+    local chatEvent = ReplicatedStorage:FindFirstChild("DefaultChatSystemChatEvents")
+    if chatEvent and chatEvent:FindFirstChild("SayMessageRequest") then
+        local success, err = pcall(function()
+            chatEvent.SayMessageRequest:FireServer(message, "All")
+        end)
+        if success then
+            return true
+        end
+    end
+    
+    -- Method 2: UI Chat Interaction with improved reliability
+    local success = pcall(function()
+        local chatGui = LocalPlayer:WaitForChild("PlayerGui", 3):WaitForChild("Chat", 3)
+        if chatGui then
+            local chatFrame = chatGui:FindFirstChild("Frame") or chatGui:FindFirstChildWhichIsA("Frame")
+            local chatBox = chatGui:FindFirstChildWhichIsA("TextBox", true)
+            
+            if chatBox then
+                -- Focus and clear current text
+                chatBox:CaptureFocus()
+                task.wait(0.1)
+                chatBox.Text = ""
+                task.wait(0.1)
+                
+                -- Type message
+                chatBox.Text = message
+                task.wait(0.2)
+                
+                -- Send message
+                VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
+                task.wait(0.1)
+                VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
+                
+                return true
+            end
+        end
+    end)
+    
+    if success then
+        return true
+    end
+
+    -- Method 3: Search for remote chat events dynamically with better heuristics
+    local potentialEvents = {}
+    
+    -- Find potential chat events
+    for _, v in ipairs(ReplicatedStorage:GetDescendants()) do
+        if v:IsA("RemoteEvent") then
+            local name = v.Name:lower()
+            if name:find("chat") or name:find("message") or name:find("say") then
+                table.insert(potentialEvents, v)
+            end
+        end
+    end
+    
+    -- Try each potential event
+    for _, event in ipairs(potentialEvents) do
+        -- Different argument patterns that chat systems might use
+        local patterns = {
+            function() event:FireServer(message) end,
+            function() event:FireServer(message, "All") end,
+            function() event:FireServer("All", message) end,
+            function() event:FireServer({Message = message}) end,
+            function() event:FireServer({message = message}) end,
+            function() event:FireServer({text = message}) end,
+            function() event:FireServer(message, LocalPlayer) end
+        }
+        
+        for _, pattern in ipairs(patterns) do
+            local success = pcall(pattern)
+            if success then
+                return true
+            end
         end
     end
 
-    -- Sort the available servers by most players
-    table.sort(availableServers, function(a, b)
-        return a.Players > b.Players
-    end)
+    -- If all methods fail
+    warn("Failed to send chat message: " .. message)
+    return false
+end
 
-    -- Join the best server (the one with most players, but not full)
-    if #availableServers > 0 then
-        local bestServer = availableServers[1]
-        debugPrint("Joining server with " .. bestServer.Players .. " players.")
-        TeleportService:TeleportToPlaceInstance(game.PlaceId, bestServer.InstanceId, LocalPlayer)
-    else
-        debugPrint("No suitable servers found.")
+function ChatSystem:SendChatMessages(messages)
+    for _, message in ipairs(messages) do
+        self:SendMessage(message)
+        task.wait(CONFIG.CHAT_DELAY)
     end
 end
 
--- Send messages from the list
-for _, msg in pairs(CHAT_MESSAGES) do
-    sendChatMessage(msg)
+-- Main Process
+local AutoHopper = {
+    messagesSent = false
+}
+
+function AutoHopper:Initialize()
+    ServerManager:Initialize()
+    
+    -- Set up teleport failure handler
+    TeleportService.TeleportInitFailed:Connect(function(player, teleportResult, errorMessage)
+        if player == LocalPlayer then
+            warn("Teleport failed: " .. errorMessage)
+            task.wait(CONFIG.TELEPORT_RETRY_DELAY)
+            self:ServerHop()
+        end
+    end)
+    
+    -- Ensure we have a character before continuing
+    ChatSystem:WaitForCharacter()
+    
+    -- Give the game a moment to fully load
+    task.wait(3)
+    
+    self:Start()
 end
 
--- Call the server hopping function
-joinBestServer()
+function AutoHopper:SendMessages()
+    if not self.messagesSent then
+        self.messagesSent = true
+        ChatSystem:SendChatMessages(CHAT_MESSAGES)
+        return true
+    end
+    return false
+end
+
+function AutoHopper:ServerHop()
+    local placeId = game.PlaceId
+    local server = ServerManager:FindSuitableServer(placeId)
+    
+    if server then
+        ServerManager:TeleportToServer(server, placeId)
+    else
+        warn("No suitable servers found. Retrying after 10 seconds...")
+        task.wait(10)
+        self:ServerHop()
+    end
+end
+
+function AutoHopper:Start()
+    -- Setup a flag in global env to prevent duplicate execution
+    if getgenv().AutoHopperRunning then
+        return
+    end
+    getgenv().AutoHopperRunning = true
+    
+    -- Send messages first
+    self:SendMessages()
+    
+    -- Wait a bit for messages to appear in chat
+    task.wait(5)
+    
+    -- Start server hopping
+    self:ServerHop()
+end
+
+-- Run the auto hopper
+AutoHopper:Initialize()
