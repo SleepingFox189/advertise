@@ -1,37 +1,41 @@
 local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
-local LocalPlayer = Players.LocalPlayer
+local LocalPlayer = Players.LocalPlayer or Players:GetPropertyChangedSignal("LocalPlayer"):Wait()
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local VirtualInputManager = game:GetService("VirtualInputManager")
 
 -- Configuration
 local CHAT_MESSAGES = {
-    "gg,JkaD9Znt Join For Acc Grinding",
-    "accountgrind,vercel,app website"
+    "gg, JkaD9Znt Join For Acc Grinding",
+    "accountgrind.vercel.app website"
 }
+
 local saveKey = "ServerHopVisited_" .. game.PlaceId
 local visitedServers = {}
 
--- Load and Save Visited Servers
+-- Utility Functions
 local function SaveVisitedServers()
-    pcall(function()
+    local success, errorMessage = pcall(function()
         writefile(saveKey .. ".json", HttpService:JSONEncode(visitedServers))
     end)
+    if not success then
+        warn("Failed to save visited servers: " .. errorMessage)
+    end
 end
 
 local function LoadVisitedServers()
-    local success, data = pcall(function()
-        if isfile(saveKey .. ".json") then
-            return HttpService:JSONDecode(readfile(saveKey .. ".json"))
-        end
+    if not isfile(saveKey .. ".json") then
         return {}
+    end
+    local success, data = pcall(function()
+        return HttpService:JSONDecode(readfile(saveKey .. ".json"))
     end)
     return success and data or {}
 end
 
 local function AddCurrentServer()
-    if game.JobId and game.JobId ~= "" then
+    if game.JobId ~= "" then
         visitedServers[game.JobId] = os.time()
         SaveVisitedServers()
     end
@@ -40,23 +44,26 @@ end
 local function CleanupOldServers()
     local currentTime = os.time()
     for jobId, timestamp in pairs(visitedServers) do
-        if currentTime - timestamp > 7200 then -- 2 hours
+        if currentTime - timestamp > 7200 then -- Expire after 2 hours
             visitedServers[jobId] = nil
         end
     end
     SaveVisitedServers()
 end
 
--- Improved Chat Function
+-- Chat Functions
 local function SendChatMessage(message)
     local chatEvent = ReplicatedStorage:FindFirstChild("DefaultChatSystemChatEvents")
     if chatEvent and chatEvent:FindFirstChild("SayMessageRequest") then
         local success = pcall(function()
             chatEvent.SayMessageRequest:FireServer(message, "All")
         end)
-        if success then return true end
+        if success then
+            return true
+        end
     end
-    
+
+    -- Fallback: Use GUI if DefaultChatSystemChatEvents doesn't exist
     local chatGui = LocalPlayer:FindFirstChild("PlayerGui") and LocalPlayer.PlayerGui:FindFirstChild("Chat")
     if chatGui then
         local chatBox = chatGui:FindFirstChildWhichIsA("TextBox", true)
@@ -68,95 +75,93 @@ local function SendChatMessage(message)
                 VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
                 VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
             end)
-            if success then return true end
+            if success then
+                return true
+            end
         end
     end
+
+    warn("Failed to send chat message: " .. message)
     return false
 end
 
 local function SendChatMessages(messages, delay)
-    delay = delay or 1.5
     for _, message in ipairs(messages) do
         SendChatMessage(message)
-        task.wait(delay)
+        task.wait(delay or 1.5)
     end
 end
 
--- Server Hopping Function
-local function GetServers(placeId, maxPlayers, cursor)
-    local API_URL = "https://games.roblox.com/v1/games/" .. placeId .. "/servers/Public?sortOrder=Asc&limit=100"
-    if cursor then API_URL = API_URL .. "&cursor=" .. cursor end
-    
+-- Server Hopping Functions
+local function GetServers(placeId, cursor)
+    local url = "https://games.roblox.com/v1/games/" .. placeId .. "/servers/Public?sortOrder=Asc&limit=100"
+    if cursor then
+        url = url .. "&cursor=" .. cursor
+    end
+
     local success, result = pcall(function()
-        return HttpService:JSONDecode(game:HttpGet(API_URL))
+        return HttpService:JSONDecode(game:HttpGet(url))
     end)
-    
+
     return success and result or {data = {}}
 end
 
-local function ServerHop(placeId, maxPlayers)
+local function ServerHop(placeId)
     placeId = placeId or game.PlaceId
     visitedServers = LoadVisitedServers()
     AddCurrentServer()
     CleanupOldServers()
-    
-    local foundServer = false
+
     local cursor = nil
-    
-    for attempt = 1, 10 do
-        local result = GetServers(placeId, maxPlayers, cursor)
-        local validServers = {}
+    local bestServer = nil
+    local maxPlayers = Players.MaxPlayers -- Gets the maximum number of players allowed per server
+
+    for _ = 1, 10 do
+        local result = GetServers(placeId, cursor)
         for _, server in ipairs(result.data) do
-            if not visitedServers[server.id] and server.playing < server.maxPlayers and server.id ~= game.JobId then
-                table.insert(validServers, server)
+            if not visitedServers[server.id] 
+                and server.playing < server.maxPlayers -- Ensure the server isn’t full
+                and server.playing > (maxPlayers * 0.75) then -- Prefer servers with more than 75% capacity
+                    bestServer = server
+                    break
             end
         end
-        
-        if #validServers > 0 then
-            local selectedServer = validServers[math.random(1, #validServers)]
-            visitedServers[selectedServer.id] = os.time()
+
+        if bestServer then
+            visitedServers[bestServer.id] = os.time()
             SaveVisitedServers()
-            
-            TeleportService:TeleportToPlaceInstance(placeId, selectedServer.id, LocalPlayer)
-            foundServer = true
-            break
+            TeleportService:TeleportToPlaceInstance(placeId, bestServer.id, LocalPlayer)
+            return
         end
-        
-        if result.nextPageCursor then
-            cursor = result.nextPageCursor
-        else
-            break
-        end
+
+        cursor = result.nextPageCursor
+        if not cursor then break end
         task.wait(1)
     end
-    
-    if not foundServer then
-        task.wait(10)
-        ServerHop(placeId, maxPlayers)
-    end
+
+    warn("No suitable servers found. Retrying after 10 seconds...")
+    task.wait(10)
+    ServerHop(placeId)
 end
 
 -- Auto Hop Process
-function StartAutoHopProcess()
+local function StartAutoHopProcess()
     if not getgenv().JustSentMessage then
         getgenv().JustSentMessage = true
-        
         task.wait(3)
-        SendChatMessages(CHAT_MESSAGES, 1.5)
+        SendChatMessages(CHAT_MESSAGES)
         task.wait(5)
-        
-        ServerHop()
-    else
-        getgenv().JustSentMessage = false
-        ServerHop()
     end
+    ServerHop()
 end
 
--- Initialize
-if not game:IsLoaded() then game.Loaded:Wait() end
-if not Players.LocalPlayer then Players:GetPropertyChangedSignal("LocalPlayer"):Wait() end
-if not Players.LocalPlayer.Character then Players.LocalPlayer.CharacterAdded:Wait() end
+-- Initialization
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
 
-task.wait(2)
-StartAutoHopProcess()
-getgenv().JustTeleported = true
+if not LocalPlayer.Character then
+    LocalPlayer.CharacterAdded:Wait()
+end
+
+task.defer(StartAutoHopProcess)
