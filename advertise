@@ -2,14 +2,13 @@ local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local VirtualInputManager = game:GetService("VirtualInputManager")
 
 -- Configuration
 local CHAT_MESSAGES = {
     "gg,JkaD9Znt Join For Acc Grinding",
     "accountgrind,vercel,app website"
 }
+local SCRIPT_URL = "https://raw.githubusercontent.com/SleepingFox189/advertise/refs/heads/main/advertise"
 local saveKey = "ServerHopVisited_" .. game.PlaceId
 local visitedServers = {}
 
@@ -47,41 +46,6 @@ local function CleanupOldServers()
     SaveVisitedServers()
 end
 
--- Improved Chat Function
-local function SendChatMessage(message)
-    local chatEvent = ReplicatedStorage:FindFirstChild("DefaultChatSystemChatEvents")
-    if chatEvent and chatEvent:FindFirstChild("SayMessageRequest") then
-        local success = pcall(function()
-            chatEvent.SayMessageRequest:FireServer(message, "All")
-        end)
-        if success then return true end
-    end
-    
-    local chatGui = LocalPlayer:FindFirstChild("PlayerGui") and LocalPlayer.PlayerGui:FindFirstChild("Chat")
-    if chatGui then
-        local chatBox = chatGui:FindFirstChildWhichIsA("TextBox", true)
-        if chatBox then
-            local success = pcall(function()
-                chatBox:CaptureFocus()
-                chatBox.Text = message
-                task.wait(0.1)
-                VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
-                VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
-            end)
-            if success then return true end
-        end
-    end
-    return false
-end
-
-local function SendChatMessages(messages, delay)
-    delay = delay or 1.5
-    for _, message in ipairs(messages) do
-        SendChatMessage(message)
-        task.wait(delay)
-    end
-end
-
 -- Server Hopping Function
 local function GetServers(placeId, maxPlayers, cursor)
     local API_URL = "https://games.roblox.com/v1/games/" .. placeId .. "/servers/Public?sortOrder=Asc&limit=100"
@@ -117,6 +81,13 @@ local function ServerHop(placeId, maxPlayers)
             visitedServers[selectedServer.id] = os.time()
             SaveVisitedServers()
             
+            -- Queue script from external link before teleporting
+            if syn and syn.queue_on_teleport then
+                syn.queue_on_teleport(game:HttpGet(SCRIPT_URL))
+            elseif queue_on_teleport then
+                queue_on_teleport(game:HttpGet(SCRIPT_URL))
+            end
+
             TeleportService:TeleportToPlaceInstance(placeId, selectedServer.id, LocalPlayer)
             foundServer = true
             break
@@ -138,18 +109,8 @@ end
 
 -- Auto Hop Process
 function StartAutoHopProcess()
-    if not getgenv().JustSentMessage then
-        getgenv().JustSentMessage = true
-        
-        task.wait(3)
-        SendChatMessages(CHAT_MESSAGES, 1.5)
-        task.wait(5)
-        
-        ServerHop()
-    else
-        getgenv().JustSentMessage = false
-        ServerHop()
-    end
+    task.wait(3)
+    ServerHop()
 end
 
 -- Initialize
