@@ -251,7 +251,7 @@ local function ServerHop(placeId, maxPlayers, statusText)
             local scriptToQueue = [[
                 repeat task.wait() until game:IsLoaded() and game:GetService("Players").LocalPlayer and game:GetService("Players").LocalPlayer.Character
                 task.wait(2)
-                loadstring(game:HttpGet("]] .. (getgenv().ScriptURL or "YOUR_SCRIPT_URL_HERE") .. [["))()
+                loadstring(game:HttpGet("]] .. (getgenv().ScriptURL or "https://raw.githubusercontent.com/SleepingFox189/advertise/refs/heads/main/advertise") .. [["))()
             ]]
             
             pcall(function()
