@@ -15,23 +15,40 @@ local SCRIPT_URL = "https://raw.githubusercontent.com/SleepingFox189/advertise/r
 local saveKey = "ServerHopVisited_" .. game.PlaceId
 local visitedServers = {}
 
--- Chat Function with Multiple Methods for Reliability
+-- Debug function
+local function debugPrint(msg)
+    print("[DEBUG]: " .. msg)
+end
+
+-- Chat Function (with Debugging)
 local function SendChatMessage(message)
+    debugPrint("Attempting to send chat message: " .. message)
+
     -- Method 1: Using DefaultChatSystemChatEvents
     local chatEvent = ReplicatedStorage:FindFirstChild("DefaultChatSystemChatEvents")
     if chatEvent and chatEvent:FindFirstChild("SayMessageRequest") then
-        local success = pcall(function()
+        local success, err = pcall(function()
             chatEvent.SayMessageRequest:FireServer(message, "All")
         end)
-        if success then return true end
+        if success then
+            debugPrint("Sent message via DefaultChatSystemChatEvents!")
+            return true
+        else
+            debugPrint("Failed to send via DefaultChatSystemChatEvents: " .. tostring(err))
+        end
     end
 
     -- Method 2: Using New TextChatService
     if TextChatService and TextChatService.ChatInputBarConfiguration then
-        local success = pcall(function()
+        local success, err = pcall(function()
             TextChatService.TextChannels.RBXGeneral:SendAsync(message)
         end)
-        if success then return true end
+        if success then
+            debugPrint("Sent message via TextChatService!")
+            return true
+        else
+            debugPrint("Failed to send via TextChatService: " .. tostring(err))
+        end
     end
 
     -- Method 3: Using Virtual Input to Simulate Chat Entry
@@ -39,17 +56,23 @@ local function SendChatMessage(message)
     if chatGui then
         local chatBox = chatGui:FindFirstChildWhichIsA("TextBox", true)
         if chatBox then
-            local success = pcall(function()
+            local success, err = pcall(function()
                 chatBox:CaptureFocus()
                 chatBox.Text = message
                 task.wait(0.1)
                 VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
                 VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
             end)
-            if success then return true end
+            if success then
+                debugPrint("Sent message via VirtualInputManager!")
+                return true
+            else
+                debugPrint("Failed to send via VirtualInputManager: " .. tostring(err))
+            end
         end
     end
-    
+
+    debugPrint("All chat methods failed!")
     return false
 end
 
