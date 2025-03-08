@@ -51,26 +51,25 @@ local function CleanupOldServers()
     SaveVisitedServers()
 end
 
--- Chat Functions
+-- Chat Function
 local function SendChatMessage(message)
+    -- Method 1: Default Chat System
     local chatEvent = ReplicatedStorage:FindFirstChild("DefaultChatSystemChatEvents")
     if chatEvent and chatEvent:FindFirstChild("SayMessageRequest") then
-        local success = pcall(function()
+        local success, err = pcall(function()
             chatEvent.SayMessageRequest:FireServer(message, "All")
         end)
         if success then
             return true
-        else
-            warn("Failed to send chat using DefaultChatSystemChatEvents.")
         end
     end
-
-    -- GUI Fallback
+    
+    -- Method 2: UI Chat Interaction
     local chatGui = LocalPlayer:FindFirstChild("PlayerGui") and LocalPlayer.PlayerGui:FindFirstChild("Chat")
     if chatGui then
         local chatBox = chatGui:FindFirstChildWhichIsA("TextBox", true)
         if chatBox then
-            local success = pcall(function()
+            local success, err = pcall(function()
                 chatBox:CaptureFocus()
                 chatBox.Text = message
                 task.wait(0.1)
@@ -79,22 +78,30 @@ local function SendChatMessage(message)
             end)
             if success then
                 return true
-            else
-                warn("Failed to send chat using GUI fallback.")
             end
         end
     end
 
+    -- Method 3: Search for remote chat events dynamically
+    for _, v in ipairs(ReplicatedStorage:GetDescendants()) do
+        if v:IsA("RemoteEvent") and (v.Name:lower():find("chat") or v.Name:lower():find("message")) then
+            local success, err = pcall(function()
+                v:FireServer(message)
+            end)
+            if success then
+                return true
+            end
+        end
+    end
+
+    -- If all methods fail
     warn("Failed to send chat message: " .. message)
     return false
 end
 
 local function SendChatMessages(messages, delay)
     for _, message in ipairs(messages) do
-        local success = SendChatMessage(message)
-        if not success then
-            warn("Chat message failed: " .. message)
-        end
+        SendChatMessage(message)
         task.wait(delay or 1.5)
     end
 end
