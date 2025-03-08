@@ -5,6 +5,7 @@ local LocalPlayer = Players.LocalPlayer
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local VirtualInputManager = game:GetService("VirtualInputManager")
 local TextChatService = game:GetService("TextChatService")
+local MessagingService = game:GetService("MessagingService")
 
 -- Configuration
 local CHAT_MESSAGES = {
@@ -20,180 +21,59 @@ local function debugPrint(msg)
     print("[DEBUG]: " .. msg)
 end
 
--- Chat Function (with Debugging)
-local function SendChatMessage(message)
-    debugPrint("Attempting to send chat message: " .. message)
-
-    -- Method 1: Using DefaultChatSystemChatEvents
-    local chatEvent = ReplicatedStorage:FindFirstChild("DefaultChatSystemChatEvents")
-    if chatEvent and chatEvent:FindFirstChild("SayMessageRequest") then
-        local success, err = pcall(function()
-            chatEvent.SayMessageRequest:FireServer(message, "All")
-        end)
-        if success then
-            debugPrint("Sent message via DefaultChatSystemChatEvents!")
-            return true
-        else
-            debugPrint("Failed to send via DefaultChatSystemChatEvents: " .. tostring(err))
-        end
-    end
-
-    -- Method 2: Using New TextChatService
-    if TextChatService and TextChatService.ChatInputBarConfiguration then
-        local success, err = pcall(function()
-            TextChatService.TextChannels.RBXGeneral:SendAsync(message)
-        end)
-        if success then
-            debugPrint("Sent message via TextChatService!")
-            return true
-        else
-            debugPrint("Failed to send via TextChatService: " .. tostring(err))
-        end
-    end
-
-    -- Method 3: Using Virtual Input to Simulate Chat Entry
-    local chatGui = LocalPlayer:FindFirstChild("PlayerGui") and LocalPlayer.PlayerGui:FindFirstChild("Chat")
-    if chatGui then
-        local chatBox = chatGui:FindFirstChildWhichIsA("TextBox", true)
-        if chatBox then
-            local success, err = pcall(function()
-                chatBox:CaptureFocus()
-                chatBox.Text = message
-                task.wait(0.1)
-                VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
-                VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
-            end)
-            if success then
-                debugPrint("Sent message via VirtualInputManager!")
-                return true
-            else
-                debugPrint("Failed to send via VirtualInputManager: " .. tostring(err))
-            end
-        end
-    end
-
-    debugPrint("All chat methods failed!")
-    return false
-end
-
--- Sends all messages with a delay
-local function SendChatMessages(messages, delay)
-    delay = delay or 2
-    for _, message in ipairs(messages) do
-        SendChatMessage(message)
-        task.wait(delay)
+-- Function to send a message in chat
+local function sendChatMessage(message)
+    local playerChat = TextChatService.Chat.InputObject
+    if playerChat then
+        local messageObject = Instance.new("TextChatMessage")
+        messageObject.Text = message
+        playerChat:Send(messageObject)
+    else
+        debugPrint("Chat service not available!")
     end
 end
 
--- Server Hopping Functions
-local function SaveVisitedServers()
-    pcall(function()
-        writefile(saveKey .. ".json", HttpService:JSONEncode(visitedServers))
+-- Function to check if the server is full
+local function isServerFull(serverInfo)
+    local maxPlayers = serverInfo.MaxPlayers
+    local currentPlayers = serverInfo.Players
+    return currentPlayers >= maxPlayers
+end
+
+-- Function to find and join the best server
+local function joinBestServer()
+    local availableServers = {}  -- List to store available servers that aren't full
+
+    -- Fetch servers data (simulate or get the actual data from some source)
+    local serversData = HttpService:GetAsync("API_ENDPOINT_TO_GET_SERVERS") -- Replace with actual data fetching logic
+    local servers = HttpService:JSONDecode(serversData)
+
+    -- Filter and sort servers by most players, and excluding full ones
+    for _, server in pairs(servers) do
+        if not isServerFull(server) then
+            table.insert(availableServers, server)
+        end
+    end
+
+    -- Sort the available servers by most players
+    table.sort(availableServers, function(a, b)
+        return a.Players > b.Players
     end)
-end
 
-local function LoadVisitedServers()
-    local success, data = pcall(function()
-        if isfile(saveKey .. ".json") then
-            return HttpService:JSONDecode(readfile(saveKey .. ".json"))
-        end
-        return {}
-    end)
-    return success and data or {}
-end
-
-local function AddCurrentServer()
-    if game.JobId and game.JobId ~= "" then
-        visitedServers[game.JobId] = os.time()
-        SaveVisitedServers()
+    -- Join the best server (the one with most players, but not full)
+    if #availableServers > 0 then
+        local bestServer = availableServers[1]
+        debugPrint("Joining server with " .. bestServer.Players .. " players.")
+        TeleportService:TeleportToPlaceInstance(game.PlaceId, bestServer.InstanceId, LocalPlayer)
+    else
+        debugPrint("No suitable servers found.")
     end
 end
 
-local function CleanupOldServers()
-    local currentTime = os.time()
-    for jobId, timestamp in pairs(visitedServers) do
-        if currentTime - timestamp > 7200 then -- 2 hours
-            visitedServers[jobId] = nil
-        end
-    end
-    SaveVisitedServers()
+-- Send messages from the list
+for _, msg in pairs(CHAT_MESSAGES) do
+    sendChatMessage(msg)
 end
 
-local function GetServers(placeId, maxPlayers, cursor)
-    local API_URL = "https://games.roblox.com/v1/games/" .. placeId .. "/servers/Public?sortOrder=Asc&limit=100"
-    if cursor then API_URL = API_URL .. "&cursor=" .. cursor end
-    
-    local success, result = pcall(function()
-        return HttpService:JSONDecode(game:HttpGet(API_URL))
-    end)
-    
-    return success and result or {data = {}}
-end
-
-local function ServerHop(placeId, maxPlayers)
-    placeId = placeId or game.PlaceId
-    visitedServers = LoadVisitedServers()
-    AddCurrentServer()
-    CleanupOldServers()
-    
-    local foundServer = false
-    local cursor = nil
-    
-    for attempt = 1, 10 do
-        local result = GetServers(placeId, maxPlayers, cursor)
-        local validServers = {}
-        for _, server in ipairs(result.data) do
-            if not visitedServers[server.id] and server.playing < server.maxPlayers and server.id ~= game.JobId then
-                table.insert(validServers, server)
-            end
-        end
-        
-        if #validServers > 0 then
-            local selectedServer = validServers[math.random(1, #validServers)]
-            visitedServers[selectedServer.id] = os.time()
-            SaveVisitedServers()
-            
-            -- Queue script before teleporting
-            if syn and syn.queue_on_teleport then
-                syn.queue_on_teleport(game:HttpGet(SCRIPT_URL))
-            elseif queue_on_teleport then
-                queue_on_teleport(game:HttpGet(SCRIPT_URL))
-            end
-
-            TeleportService:TeleportToPlaceInstance(placeId, selectedServer.id, LocalPlayer)
-            foundServer = true
-            break
-        end
-        
-        if result.nextPageCursor then
-            cursor = result.nextPageCursor
-        else
-            break
-        end
-        task.wait(1)
-    end
-    
-    if not foundServer then
-        task.wait(10)
-        ServerHop(placeId, maxPlayers)
-    end
-end
-
--- Auto Hop Process
-function StartAutoHopProcess()
-    while true do
-        task.wait(3)
-        SendChatMessages(CHAT_MESSAGES, 2)
-        task.wait(5)
-        ServerHop()
-    end
-end
-
--- Initialize
-if not game:IsLoaded() then game.Loaded:Wait() end
-if not Players.LocalPlayer then Players:GetPropertyChangedSignal("LocalPlayer"):Wait() end
-if not Players.LocalPlayer.Character then Players.LocalPlayer.CharacterAdded:Wait() end
-
-task.wait(2)
-StartAutoHopProcess()
-getgenv().JustTeleported = true
+-- Call the server hopping function
+joinBestServer()
