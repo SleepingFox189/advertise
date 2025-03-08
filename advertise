@@ -60,10 +60,12 @@ local function SendChatMessage(message)
         end)
         if success then
             return true
+        else
+            warn("Failed to send chat using DefaultChatSystemChatEvents.")
         end
     end
 
-    -- Fallback: Use GUI if DefaultChatSystemChatEvents doesn't exist
+    -- GUI Fallback
     local chatGui = LocalPlayer:FindFirstChild("PlayerGui") and LocalPlayer.PlayerGui:FindFirstChild("Chat")
     if chatGui then
         local chatBox = chatGui:FindFirstChildWhichIsA("TextBox", true)
@@ -77,6 +79,8 @@ local function SendChatMessage(message)
             end)
             if success then
                 return true
+            else
+                warn("Failed to send chat using GUI fallback.")
             end
         end
     end
@@ -87,7 +91,10 @@ end
 
 local function SendChatMessages(messages, delay)
     for _, message in ipairs(messages) do
-        SendChatMessage(message)
+        local success = SendChatMessage(message)
+        if not success then
+            warn("Chat message failed: " .. message)
+        end
         task.wait(delay or 1.5)
     end
 end
@@ -103,7 +110,12 @@ local function GetServers(placeId, cursor)
         return HttpService:JSONDecode(game:HttpGet(url))
     end)
 
-    return success and result or {data = {}}
+    if not success then
+        warn("Failed to fetch server data. Check your internet connection or API usage.")
+        return {data = {}}
+    end
+
+    return result
 end
 
 local function ServerHop(placeId)
