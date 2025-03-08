@@ -1,0 +1,352 @@
+local TeleportService = game:GetService("TeleportService")
+local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+
+-- Configuration
+local CHAT_MESSAGES = {
+    "gg,JkaD9Znt Join For Acc Grinding",
+    "accountgrind,vercel,app website"
+}
+local saveKey = "ServerHopVisited_" .. game.PlaceId
+local visitedServers = {}
+
+-- Helper Functions
+local function SaveVisitedServers()
+    pcall(function()
+        writefile(saveKey .. ".json", HttpService:JSONEncode(visitedServers))
+    end)
+end
+
+local function LoadVisitedServers()
+    return pcall(function()
+        if isfile(saveKey .. ".json") then
+            return HttpService:JSONDecode(readfile(saveKey .. ".json"))
+        end
+        return {}
+    end) and visitedServers or {}
+end
+
+local function AddCurrentServer()
+    if game.JobId and game.JobId ~= "" then
+        visitedServers[game.JobId] = os.time()
+        SaveVisitedServers()
+    end
+end
+
+local function CleanupOldServers()
+    local currentTime = os.time()
+    for jobId, timestamp in pairs(visitedServers) do
+        if currentTime - timestamp > 7200 then -- 2 hours
+            visitedServers[jobId] = nil
+        end
+    end
+    SaveVisitedServers()
+end
+
+local function GetServers(placeId, maxPlayers, cursor)
+    local API_URL = "https://games.roblox.com/v1/games/" .. placeId .. "/servers/Public?sortOrder=Asc&limit=100"
+    if cursor then API_URL = API_URL .. "&cursor=" .. cursor end
+    if maxPlayers then API_URL = API_URL .. "&maxPlayers=" .. maxPlayers end
+    
+    local success, result = pcall(function()
+        return HttpService:JSONDecode(game:HttpGet(API_URL))
+    end)
+    
+    return success and result or {data = {}}
+end
+
+-- Improved chat function with multiple methods for better compatibility
+local function SendChatMessage(message)
+    -- Method 1: Default chat system
+    local success = pcall(function()
+        game:GetService("ReplicatedStorage").DefaultChatSystemChatEvents.SayMessageRequest:FireServer(message, "All")
+        return true
+    end)
+    
+    if success then return true end
+    
+    -- Method 2: Legacy chat GUI interaction
+    success = pcall(function()
+        local chatBox = game:GetService("Players").LocalPlayer.PlayerGui.Chat.Frame.ChatBarParentFrame.Frame.BoxFrame.Frame.ChatBar
+        if chatBox then
+            chatBox:CaptureFocus()
+            chatBox.Text = message
+            task.wait(0.1)
+            VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
+            VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
+            return true
+        end
+    end)
+    
+    if success then return true end
+    
+    -- Method 3: Find chat remotes by name pattern
+    for _, v in pairs(ReplicatedStorage:GetDescendants()) do
+        if (v.Name:lower():find("chat") or v.Name:lower():find("message")) and v:IsA("RemoteEvent") then
+            success = pcall(function()
+                v:FireServer(message)
+                return true
+            end)
+            if success then return true end
+        end
+    end
+    
+    -- Method 4: TextBox simulation with broader search
+    for _, v in pairs(game:GetDescendants()) do
+        if v:IsA("TextBox") and (v.Name:lower():find("chat") or v.Name:lower():find("message") or
+           (v.Parent and (v.Parent.Name:lower():find("chat") or v.Parent.Name:lower():find("message")))) then
+            success = pcall(function()
+                v:CaptureFocus()
+                v.Text = message
+                task.wait(0.1)
+                VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
+                VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
+                return true
+            end)
+            if success then return true end
+        end
+    end
+    
+    -- Method 5: BubbleChat or other chat services
+    success = pcall(function()
+        local chatService = require(game:GetService("Chat").ClientChatModules.ChatSettings)
+        chatService.ChatActive = true
+        
+        local chatFrame = LocalPlayer.PlayerGui:FindFirstChild("BubbleChat", true)
+        if chatFrame then
+            local chatBar = chatFrame:FindFirstChild("ChatBar", true) or chatFrame:FindFirstChild("TextBox", true)
+            if chatBar and chatBar:IsA("TextBox") then
+                chatBar:CaptureFocus()
+                chatBar.Text = message
+                task.wait(0.1)
+                VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
+                VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
+                return true
+            end
+        end
+    end)
+    
+    return success
+end
+
+local function SendChatMessages(messages, delay)
+    delay = delay or 1.5
+    for i, message in ipairs(messages) do
+        SendChatMessage(message)
+        if i < #messages then task.wait(delay) end
+    end
+end
+
+-- UI Creation
+local function CreateServerHopButton()
+    local ScreenGui = Instance.new("ScreenGui")
+    ScreenGui.Name = "ServerHopGui"
+    ScreenGui.Parent = game.CoreGui
+    
+    local Button = Instance.new("TextButton")
+    Button.Size = UDim2.new(0, 150, 0, 50)
+    Button.Position = UDim2.new(0.9, -75, 0.1, 0)
+    Button.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+    Button.BorderColor3 = Color3.fromRGB(80, 80, 80)
+    Button.Text = "Server Hop"
+    Button.TextColor3 = Color3.fromRGB(255, 255, 255)
+    Button.TextScaled = true
+    Button.Parent = ScreenGui
+    
+    local Corner = Instance.new("UICorner")
+    Corner.CornerRadius = UDim.new(0, 8)
+    Corner.Parent = Button
+    
+    -- Make button draggable
+    local dragging, dragInput, dragStart, startPos = false
+    
+    Button.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
+            dragStart = input.Position
+            startPos = Button.Position
+        end
+    end)
+    
+    Button.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = false
+        end
+    end)
+    
+    game:GetService("UserInputService").InputChanged:Connect(function(input)
+        if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+            local delta = input.Position - dragStart
+            Button.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset + delta.X,
+                startPos.Y.Scale, startPos.Y.Offset + delta.Y
+            )
+        end
+    end)
+    
+    local StatusLabel = Instance.new("TextLabel")
+    StatusLabel.Size = UDim2.new(1, 0, 0, 20)
+    StatusLabel.Position = UDim2.new(0, 0, 1, 5)
+    StatusLabel.BackgroundTransparency = 1
+    StatusLabel.Text = "Ready"
+    StatusLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    StatusLabel.TextSize = 14
+    StatusLabel.Parent = Button
+    
+    Button.MouseButton1Click:Connect(function()
+        Button.Text = "Hopping..."
+        Button.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+        StartAutoHopProcess(StatusLabel)
+    end)
+    
+    return StatusLabel
+end
+
+-- Server hopping logic
+local function ServerHop(placeId, maxPlayers, statusText)
+    placeId = placeId or game.PlaceId
+    
+    -- Load previously visited servers
+    visitedServers = LoadVisitedServers()
+    AddCurrentServer()
+    CleanupOldServers()
+    
+    -- Create status text if not provided
+    if not statusText then
+        statusText = Instance.new("TextLabel")
+        statusText.Size = UDim2.new(0, 200, 0, 50)
+        statusText.Position = UDim2.new(0.5, -100, 0.5, -25)
+        statusText.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+        statusText.BackgroundTransparency = 0.5
+        statusText.TextColor3 = Color3.fromRGB(255, 255, 255)
+        statusText.Text = "Finding a new server..."
+        statusText.TextScaled = true
+        statusText.Parent = game.CoreGui
+    end
+    
+    -- Try to find a server
+    local foundServer = false
+    local cursor = nil
+    
+    for attempt = 1, 10 do
+        statusText.Text = "Finding a new server... (" .. attempt .. "/10)"
+        local result = GetServers(placeId, maxPlayers, cursor)
+        
+        -- Filter out servers we've already visited
+        local validServers = {}
+        for _, server in ipairs(result.data) do
+            if not visitedServers[server.id] and server.playing < server.maxPlayers and server.id ~= game.JobId then
+                table.insert(validServers, server)
+            end
+        end
+        
+        if #validServers > 0 then
+            local selectedServer = validServers[math.random(1, #validServers)]
+            statusText.Text = "Server found! Teleporting..."
+            
+            -- Queue the script to run after teleport
+            local scriptToQueue = [[
+                repeat task.wait() until game:IsLoaded() and game:GetService("Players").LocalPlayer and game:GetService("Players").LocalPlayer.Character
+                task.wait(2)
+                loadstring(game:HttpGet("]] .. (getgenv().ScriptURL or "YOUR_SCRIPT_URL_HERE") .. [["))()
+            ]]
+            
+            pcall(function()
+                TeleportService:SetTeleportGui(statusText)
+                TeleportService:QueueOnTeleport(scriptToQueue)
+            end)
+            
+            local teleSuccess = pcall(function()
+                TeleportService:TeleportToPlaceInstance(placeId, selectedServer.id, LocalPlayer)
+            end)
+            
+            if teleSuccess then
+                foundServer = true
+                break
+            else
+                visitedServers[selectedServer.id] = os.time() -- Mark as visited to avoid retrying
+            end
+        end
+        
+        if result.nextPageCursor then
+            cursor = result.nextPageCursor
+        else
+            break
+        end
+        
+        task.wait(1)
+    end
+    
+    if not foundServer then
+        statusText.Text = "No suitable servers found. Trying again in 10s..."
+        task.wait(10)
+        statusText:Destroy()
+        ServerHop(placeId, maxPlayers) -- Retry the entire process
+    end
+end
+
+-- Main function to handle the entire auto-hop process
+function StartAutoHopProcess(statusLabel)
+    if not getgenv().JustSentMessage then
+        getgenv().JustSentMessage = true
+        
+        statusLabel.Text = "Sending messages..."
+        if not LocalPlayer.Character then
+            LocalPlayer.CharacterAdded:Wait()
+        end
+        task.wait(3)
+        
+        SendChatMessages(CHAT_MESSAGES, 1.5)
+        statusLabel.Text = "Messages sent! Hopping soon..."
+        task.wait(5)
+        
+        statusLabel.Text = "Server hopping..."
+        ServerHop(nil, nil, statusLabel)
+    else
+        getgenv().JustSentMessage = false
+        ServerHop(nil, nil, statusLabel)
+    end
+end
+
+-- Store script URL for re-execution after teleport
+if not getgenv().ScriptURL then
+    pcall(function()
+        getgenv().ScriptURL = getfenv().script_url or getfenv().script
+    end)
+end
+
+-- Initialize script
+local function Initialize()
+    if not game:IsLoaded() then game.Loaded:Wait() end
+    if not Players.LocalPlayer then Players:GetPropertyChangedSignal("LocalPlayer"):Wait() end
+    if not Players.LocalPlayer.Character then Players.LocalPlayer.CharacterAdded:Wait() end
+    
+    task.wait(2)
+    
+    local statusLabel = CreateServerHopButton()
+    
+    if getgenv().JustTeleported then
+        getgenv().JustTeleported = false
+        getgenv().JustSentMessage = true
+        
+        statusLabel.Text = "Sending messages..."
+        task.wait(3)
+        
+        SendChatMessages(CHAT_MESSAGES, 1.5)
+        statusLabel.Text = "Messages sent! Hopping soon..."
+        
+        task.wait(5)
+        ServerHop(nil, nil, statusLabel)
+    end
+end
+
+Initialize()
+getgenv().JustTeleported = true
+
+return {
+    ServerHop = ServerHop,
+    StartAutoHop = StartAutoHopProcess
+}
